@@ -24,6 +24,7 @@
 - 有界重排缓冲按映射时间排序后再做质量检查，修正同一时基组内的到达乱序；冗余去重按来源/参数和时间窗抑制重复样本并保留记录。
 - 多源统计融合：把 2~16 路来源按时间窗口对齐后合并为一个值，支持 `mean`/`median`/`vote`；各源分歧超过容差时给出 `fused_divergence`，并保留全部证据。
 - 字典参数可按 CAN 标识符（和匹配字节）从抓包 CAN 帧的数据字节解码，用于真实 CAN 日志；示例 `config/obd-can.ini` 用公开的 OBD-II 标准编码。
+- 面向下游分析的扁平导出 `bus_export`：每条观测一行的 CSV/JSONL，含统一时间语义与 `ok/expected_absent/invalid/not_due` 状态，接口规范见 [interface-for-analysis.md](docs/interface-for-analysis.md)。
 - 参数和分析事件输出 JSONL，保留原始报文编号及配置副本。在线配置模式和离线分析使用同一处理对象。
 - 五种内置协议的探测、解析与工厂：ARINC 429 字、MIL-STD-1553B 字、CAN 2.0 帧、抓包 CAN（无线上 CRC，贴近真实总线日志）和 CRC-16 分帧字节流。
 - 运行时路由器：默认按内容自动识别，支持按来源/通道手动指定和可信来源提示，遵守观察预算和候选上限，按来源、通道、代次和回放原来源隔离；坏帧不切换协议。
@@ -134,6 +135,28 @@ sequence_step=0
 
 `can_id` 与可选的 `match_offset`/`match_value` 把同一来源/通道下不同 CAN ID（和 PID）区分开；位偏移相对数据字节。`config/obd-can.ini` 是真实车辆 OBD-II 日志的完整示例（公开标准编码，非厂家 ICD）。
 
+参数还可声明更新周期用于导出状态判定（缺省表示未知，不猜测）：
+
+```ini
+[parameter engine_rpm]
+# ... 省略来源/位定义 ...
+nominal_period_ns=20000000   # 申报周期（纳秒）
+epoch_ns=1000000000          # 可选：槽位锚点；缺省以首次观测为锚
+jitter_tolerance_ns=1000000      # 可选：抖动容差
+arrival_delay_tolerance_ns=0     # 可选：到达延迟容差
+```
+
+## 面向分析的数据接口
+
+`bus_export` 把一段记录导出为下游分析可直接读取的扁平文件，并附带状态与时间语义：
+
+```powershell
+.\build-gcc-debug\bin\bus_export.exe config\correlation-demo.ini runs\session.avbus runs\session_export
+python examples\read_flat.py runs\session_export
+```
+
+产物：`parameters_flat.csv`、`parameters_flat.jsonl`、`export_metadata.json`、`configuration.ini`。字段字典、时间语义（`observation ≤ ingest ≤ available`）、状态判定规则（`ok/expected_absent/invalid/not_due/unknown_schedule`、`off_schedule` 标记）、跨文件 `raw_reference` 与稳定性承诺见 [interface-for-analysis.md](docs/interface-for-analysis.md)。原有 `parameters.jsonl`/`events.jsonl` 不变。
+
 详细字段定义和结果语义见 [v0.2 参数与关联设计](docs/processing-v0.2.md)。这个文件是我们自己的字典格式，需要将设备 ICD 转录并核对后使用，不是直接导入任意厂家 ICD 的通用解释器。
 
 ## 协议识别与路由检查
@@ -230,7 +253,14 @@ fail_start=0|1   仅用于验证启动失败恢复
 profile=none|command|feedback|sensor_a|sensor_b   场景模式：多实例协调产生相关数据
 scenario_seed=N  场景模式下所有实例共享的随机种子
 response_delay=N 场景模式下反馈相对指令延迟的节拍数
+phase_ms=N       首帧前延迟
+jitter_ms=N      周期抖动（±N）
+loss_prob=0..100 丢帧概率（%）
+valid_prob=0..100 有效概率（%），否则置无效标志
+arrival_delay_ms=N 每帧到达前延迟
 ```
+
+> 以上 `phase_ms/jitter_ms/loss_prob/valid_prob/arrival_delay_ms` 仅用于生成“多周期、缺失、无效”等**样例场景**以贯通数据链路，**不得用于研究结论**；不配置时行为与之前完全一致。
 
 随机模式示例：`add rng build-gcc-debug/bin/bus_random.dll random=1;spread_milli=3000;period_ms=5`。
 

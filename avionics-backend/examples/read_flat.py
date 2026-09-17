@@ -20,7 +20,7 @@ FIELDS = [
     "observation_time_ns", "available_time_ns", "ingest_time_ns", "clock_group",
     "offset_ns", "uncertainty_ns", "nominal_period_ns", "sequence", "sequence_step",
     "raw_record_index", "origin_source", "origin_generation", "decoder_version",
-    "config_version",
+    "config_version", "flags",
 ]
 
 
