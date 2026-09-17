@@ -171,9 +171,23 @@ spread_milli=N   随机模式下相对基准值的上下随机范围（毫）
 period_ms=N      发送周期
 channel=N        通道
 fail_start=0|1   仅用于验证启动失败恢复
+profile=none|command|feedback|sensor_a|sensor_b   场景模式：多实例协调产生相关数据
+scenario_seed=N  场景模式下所有实例共享的随机种子
+response_delay=N 场景模式下反馈相对指令延迟的节拍数
 ```
 
 随机模式示例：`add rng build-gcc-debug/bin/bus_random.dll random=1;spread_milli=3000;period_ms=5`。
+
+**场景模式**用于演示有意义的相关分析。把四个实例配置成不同 `profile`，共用同一个 `scenario_seed` 和 `period_ms`；所有实例按宿主的同一单调时钟对齐到相同节拍，因此时间戳一致、不会出现“迟到”质量标记：
+
+```text
+add control  build-gcc-debug/bin/bus_random.dll profile=command;scenario_seed=1001;period_ms=20
+add feedback build-gcc-debug/bin/bus_random.dll profile=feedback;scenario_seed=1001;period_ms=20;response_delay=1
+add sensor_a build-gcc-debug/bin/bus_random.dll profile=sensor_a;scenario_seed=1001;period_ms=20
+add sensor_b build-gcc-debug/bin/bus_random.dll profile=sensor_b;scenario_seed=1001;period_ms=20
+```
+
+反馈跟随指令并偶尔不响应，两路温度多数时候一致、偶尔不一致，于是分析会得到“一致/不一致/响应正常/响应超时”等有意义的结论。数据每次运行不同（种子可换），但内部是协调的。未设置 `profile` 时保持原有递增或随机的独立行为。
 
 ## 当前边界与下一阶段
 
