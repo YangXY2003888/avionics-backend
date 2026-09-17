@@ -107,6 +107,11 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
             field.max_age_ns = milliseconds(take(values, "max_age_ms"));
             field.sequence_step = number<std::uint64_t>(take(values, "sequence_step", "0"));
             if (values.contains("valid_bit")) field.valid_bit = number<std::uint32_t>(take(values, "valid_bit"));
+            if (values.contains("nominal_period_ns")) field.nominal_period_ns = number<std::uint64_t>(take(values, "nominal_period_ns"));
+            if (values.contains("phase_offset_ns")) field.phase_offset_ns = number<std::uint64_t>(take(values, "phase_offset_ns"));
+            if (values.contains("epoch_ns")) field.epoch_ns = number<std::uint64_t>(take(values, "epoch_ns"));
+            if (values.contains("jitter_tolerance_ns")) field.jitter_tolerance_ns = number<std::uint64_t>(take(values, "jitter_tolerance_ns"));
+            if (values.contains("arrival_delay_tolerance_ns")) field.arrival_delay_tolerance_ns = number<std::uint64_t>(take(values, "arrival_delay_tolerance_ns"));
             if (values.contains("can_id")) field.can_id = hexadecimal(take(values, "can_id"));
             if (values.contains("match_offset") || values.contains("match_value")) {
                 if (!values.contains("match_offset") || !values.contains("match_value"))

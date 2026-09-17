@@ -17,6 +17,9 @@ struct FieldDefinition {
     // When set, the parameter is decoded from a captured CAN frame's data bytes.
     std::optional<std::uint32_t> can_id;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> can_match;
+    // Declared update schedule. Zero means unknown; it is never guessed.
+    std::uint64_t nominal_period_ns{}, phase_offset_ns{}, epoch_ns{};
+    std::uint64_t jitter_tolerance_ns{}, arrival_delay_tolerance_ns{};
 };
 struct ClockDefinition {
     std::string source, group;

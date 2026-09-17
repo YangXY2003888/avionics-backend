@@ -40,6 +40,8 @@ std::vector<ParameterSample> DictionaryDecoder::decode(const RawFrame& frame) {
         sample.generation = frame.generation; sample.origin_generation = frame.origin_generation;
         sample.capture_time_ns = frame.capture_time_ns; sample.ingest_time_ns = frame.ingest_time_ns;
         sample.clock_domain = frame.clock_domain; sample.raw_record_index = frame.record_index;
+        sample.protocol = frame.protocol; sample.channel = frame.channel; sample.origin_source = frame.origin_source;
+        sample.config_version = config_.version; sample.nominal_period_ns = field.nominal_period_ns;
         sample.sequence = frame.sequence; sample.sequence_step = field.sequence_step; sample.max_age_ns = field.max_age_ns;
         sample.decoder_version = config_.version; sample.valid = (frame.flags & BUS_FRAME_INVALID) == 0;
         try { decodeFieldValue(field, source, sample.value, sample.valid); }

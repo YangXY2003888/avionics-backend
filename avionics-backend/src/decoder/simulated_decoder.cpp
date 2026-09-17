@@ -19,6 +19,7 @@ std::vector<ParameterSample> SimulatedDecoder::decode(const RawFrame& frame) {
     sample.unit = "degC"; sample.decoder_version = "simulated-v1";
     sample.capture_time_ns = frame.capture_time_ns; sample.ingest_time_ns = frame.ingest_time_ns;
     sample.clock_domain = frame.clock_domain; sample.raw_record_index = frame.record_index;
+    sample.protocol = frame.protocol; sample.channel = frame.channel; sample.origin_source = frame.origin_source;
     sample.value = static_cast<double>(std::bit_cast<std::int64_t>(bits)) / 1000.0;
     sample.valid = (frame.flags & BUS_FRAME_INVALID) == 0;
     return {std::move(sample)};

@@ -29,6 +29,8 @@ std::vector<ParameterSample> DictionaryMessageDecoder::decode(const ProtocolMess
         sample.generation = message.stream.generation; sample.origin_generation = message.stream.origin_generation;
         sample.capture_time_ns = capture; sample.ingest_time_ns = capture;
         sample.clock_domain = clock_domain; sample.raw_record_index = record;
+        sample.protocol = message.protocol; sample.channel = address.channel; sample.origin_source = address.origin_source;
+        sample.config_version = config_.version; sample.nominal_period_ns = field.nominal_period_ns;
         sample.sequence = sequence; sample.sequence_step = field.sequence_step; sample.max_age_ns = field.max_age_ns;
         sample.decoder_version = config_.version; sample.valid = (message.flags & BUS_FRAME_INVALID) == 0;
         try { decodeFieldValue(field, message.payload, sample.value, sample.valid); }

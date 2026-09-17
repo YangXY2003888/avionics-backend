@@ -27,6 +27,10 @@ struct ParameterSample {
     std::uint64_t origin_generation{};
     std::uint64_t sequence{}, max_age_ns{}, sequence_step{};
     std::uint32_t clock_domain{};
+    std::uint32_t protocol{}, channel{};
+    std::string origin_source;
+    std::string config_version;
+    std::uint64_t nominal_period_ns{};
     ParameterValue value{0.0};
     bool valid{};
 };

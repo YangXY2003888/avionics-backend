@@ -30,7 +30,8 @@ add_library(bus_core STATIC
     src/analysis/rule_analyzer.cpp
     src/protocol/protocols.cpp
     src/protocol/protocol_router.cpp
-    src/protocol/protocol_pipeline.cpp)
+    src/protocol/protocol_pipeline.cpp
+    src/export/flat_export.cpp)
 target_link_libraries(bus_core PUBLIC bus_archive project_options Threads::Threads ${CMAKE_DL_LIBS})
 
 function(add_bus_plugin name source)
@@ -51,6 +52,8 @@ add_executable(bus_analyze src/analyze_main.cpp)
 target_link_libraries(bus_analyze PRIVATE bus_core)
 add_executable(bus_protocol src/protocol/protocol_main.cpp)
 target_link_libraries(bus_protocol PRIVATE bus_core)
+add_executable(bus_export src/export/export_main.cpp)
+target_link_libraries(bus_export PRIVATE bus_core)
 
 include(CTest)
 if(BUILD_TESTING)
@@ -79,4 +82,8 @@ if(BUILD_TESTING)
     set_tests_properties(protocol_cli PROPERTIES TIMEOUT 30)
     add_test(NAME random_plugin_demo COMMAND bus_backend --demo $<TARGET_FILE:bus_random>)
     set_tests_properties(random_plugin_demo PROPERTIES TIMEOUT 30)
+    add_executable(flat_export_tests tests/flat_export.cpp)
+    target_link_libraries(flat_export_tests PRIVATE bus_core)
+    add_test(NAME flat_export COMMAND flat_export_tests "${CMAKE_BINARY_DIR}/export-output")
+    set_tests_properties(flat_export PROPERTIES TIMEOUT 30)
 endif()
