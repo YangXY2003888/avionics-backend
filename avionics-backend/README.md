@@ -25,6 +25,7 @@
 - 两种内置协议的探测、解析与工厂：奇校验 32 位字和 CRC-16 分帧字节流。
 - 运行时路由器：默认按内容自动识别，支持按来源/通道手动指定和可信来源提示，遵守观察预算和候选上限，按来源、通道、代次和回放原来源隔离；坏帧不切换协议。
 - 消息解码器和 `IProtocolPipelineDecoder` 接入，将已校验协议消息映射为工程参数；可通过 `bus_protocol` 检查路由决定。
+- 可配置的随机数据源插件 `bus_random`，用 `random=0|1` 切换确定性递增值或随机值，用于演示和压力测试。
 
 ## 快速构建：当前 Windows 环境
 
@@ -158,6 +159,21 @@ status replay_a
 - 示例值为 `initial_milli + (sequence % 1000) * step_milli`，每 1000 个样本重复。
 - 默认分析规则只检测示例温度向上越过 22 °C 的事件，不代表航空诊断阈值。
 - 插件的 `fail_start=1` 仅用于验证启动失败恢复。
+
+随机数据源插件 `bus_random` 与模拟插件使用相同的载荷约定（协议编号 `65535`，小端有符号 64 位毫值），配置项：
+
+```text
+random=0|1       0 为确定性递增（默认），1 为随机模式
+seed=N           随机模式下非零则固定随机种子，便于复现
+initial_milli=N  基准值（毫）
+step_milli=N     确定性模式下的步长（毫）
+spread_milli=N   随机模式下相对基准值的上下随机范围（毫）
+period_ms=N      发送周期
+channel=N        通道
+fail_start=0|1   仅用于验证启动失败恢复
+```
+
+随机模式示例：`add rng build-gcc-debug/bin/bus_random.dll random=1;spread_milli=3000;period_ms=5`。
 
 ## 当前边界与下一阶段
 
