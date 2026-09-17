@@ -160,6 +160,25 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
             definition.window_ns = milliseconds(take(values, "window_ms"));
             if (!definition.window_ns) throw std::invalid_argument("dedup window must be positive");
             config.dedup.push_back(std::move(definition));
+        } else if (type == "fusion") {
+            FusionDefinition definition; definition.id = id;
+            const auto count = number<std::size_t>(take(values, "count"));
+            if (count < 2 || count > 16) throw std::invalid_argument("fusion requires 2..16 channels");
+            for (std::size_t index = 1; index <= count; ++index) {
+                FusionChannel channel;
+                channel.source = take(values, "source_" + std::to_string(index));
+                channel.parameter = take(values, "parameter_" + std::to_string(index));
+                definition.channels.push_back(std::move(channel));
+            }
+            const auto method = take(values, "method");
+            if (method == "mean") definition.method = FusionMethod::Mean;
+            else if (method == "median") definition.method = FusionMethod::Median;
+            else if (method == "vote") definition.method = FusionMethod::Vote;
+            else throw std::invalid_argument("unsupported fusion method: " + method);
+            definition.tolerance = number<double>(take(values, "tolerance"));
+            definition.window_ns = milliseconds(take(values, "window_ms"));
+            if (definition.tolerance < 0 || !definition.window_ns) throw std::invalid_argument("invalid fusion rule");
+            config.fusion.push_back(std::move(definition));
         } else throw std::invalid_argument("unknown section type: " + type);
         empty(values);
     }
@@ -180,6 +199,13 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
         if (!known) throw std::invalid_argument("reorder refers to unknown clock group: " + definition.group);
     }
     for (const auto& definition : config.dedup) validate_selector(Selector{definition.source, definition.parameter});
+    for (const auto& rule : config.fusion) {
+        for (const auto& channel : rule.channels) validate_selector(Selector{channel.source, channel.parameter});
+        for (std::size_t a = 0; a < rule.channels.size(); ++a)
+            for (std::size_t b = a + 1; b < rule.channels.size(); ++b)
+                if (rule.channels[a].source == rule.channels[b].source && rule.channels[a].parameter == rule.channels[b].parameter)
+                    throw std::invalid_argument("fusion channels must be distinct");
+    }
     return config;
 }
 }

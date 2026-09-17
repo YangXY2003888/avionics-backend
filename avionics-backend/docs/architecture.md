@@ -37,7 +37,7 @@ flowchart LR
 | `ProtocolPipelineDecoder` | `src/protocol/protocol_pipeline.cpp` | 组合路由器与消息解码器，接入 `IParameterDecoder` |
 | `bus_protocol` | `src/protocol/protocol_main.cpp` | 命令行协议识别与路由检查 |
 | `TimeQualityProcessor` | `include/core/processing.hpp` | 显式偏移映射、误差界、序号与时间质量 |
-| `ProcessingService` | `src/analysis/processing.cpp` | 有限窗口一致性与指令响应分析，规则状态和水位 |
+| `ProcessingService` | `src/analysis/processing.cpp` | 有限窗口一致性、指令响应与多源融合分析，重排、去重、规则状态和水位 |
 | `JsonlAnalysisSink` | `src/storage/jsonl_analysis.cpp` | 参数与带证据引用的分析结果持久化 |
 
 ## 对象生命周期

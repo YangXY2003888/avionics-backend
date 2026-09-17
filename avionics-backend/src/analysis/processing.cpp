@@ -1,4 +1,5 @@
 #include "core/processing.hpp"
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -34,6 +35,38 @@ bool fresh(const AlignedSample& sample, std::uint64_t now) {
     return sample.uncertainty_ns <= sample.sample.max_age_ns && age <= sample.sample.max_age_ns - sample.uncertainty_ns;
 }
 std::uint64_t distance(std::uint64_t a, std::uint64_t b) { return a > b ? a - b : b - a; }
+std::optional<double> fuseValues(FusionMethod method, std::vector<double> values) {
+    if (values.empty()) return std::nullopt;
+    if (method == FusionMethod::Mean) {
+        double sum = 0;
+        for (const auto value : values) sum += value;
+        return sum / static_cast<double>(values.size());
+    }
+    if (method == FusionMethod::Median) {
+        std::sort(values.begin(), values.end());
+        const auto size = values.size();
+        return size % 2 ? values[size / 2] : (values[size / 2 - 1] + values[size / 2]) / 2;
+    }
+    std::vector<long long> rounded;
+    rounded.reserve(values.size());
+    for (const auto value : values) {
+        if (!std::isfinite(value) || value > 9.0e15 || value < -9.0e15) return std::nullopt;
+        rounded.push_back(std::llround(value));
+    }
+    std::sort(rounded.begin(), rounded.end());
+    std::size_t best_count = 0, winners = 0;
+    long long best = rounded.front();
+    for (std::size_t i = 0; i < rounded.size();) {
+        std::size_t j = i;
+        while (j < rounded.size() && rounded[j] == rounded[i]) ++j;
+        const auto count = j - i;
+        if (count > best_count) { best_count = count; best = rounded[i]; winners = 1; }
+        else if (count == best_count) ++winners;
+        i = j;
+    }
+    if (winners > 1) return std::nullopt;
+    return static_cast<double>(best);
+}
 CorrelationResult event(const std::string& id, const std::string& outcome, const AlignedSample& first,
     const AlignedSample* second = nullptr) {
     CorrelationResult result;
@@ -83,9 +116,11 @@ AlignedSample TimeQualityProcessor::process(const ParameterSample& sample) {
 ProcessingService::ProcessingService(BackendConfiguration config, std::shared_ptr<IAnalysisSink> sink)
     : config_(std::move(config)), quality_(config_.clocks), sink_(std::move(sink)),
       pairs_(config_.consistency.size()), responses_(config_.responses.size()),
-      dedup_last_(config_.dedup.size()) {
+      fusions_(config_.fusion.size()), dedup_last_(config_.dedup.size()) {
     if (!sink_) throw std::invalid_argument("analysis sink is required");
     for (const auto& definition : config_.reorder) reorder_windows_[definition.group] = definition.window_ns;
+    for (std::size_t i = 0; i < fusions_.size(); ++i)
+        fusions_[i].history.resize(config_.fusion[i].channels.size());
 }
 void ProcessingService::emit(CorrelationResult result) {
     sink_->result(result);
@@ -139,7 +174,7 @@ void ProcessingService::deliver(AlignedSample aligned) {
     sink_->sample(aligned);
     ++stats_.samples;
     if (aligned.usable()) ++stats_.usable; else ++stats_.rejected;
-    processConsistency(aligned); processResponse(aligned);
+    processConsistency(aligned); processResponse(aligned); processFusion(aligned);
 }
 void ProcessingService::releaseReady(const std::string& group, bool force) {
     const auto window_it = reorder_windows_.find(group);
@@ -225,6 +260,49 @@ void ProcessingService::processResponse(const AlignedSample& sample) {
             emit(std::move(result)); state.pending.reset();
         }
         old = sample;
+    }
+}
+void ProcessingService::processFusion(const AlignedSample& sample) {
+    const auto reference = sample.time_ns;
+    if (!reference) return;
+    for (std::size_t i = 0; i < config_.fusion.size(); ++i) {
+        const auto& rule = config_.fusion[i];
+        auto& state = fusions_[i];
+        std::size_t matched = rule.channels.size();
+        for (std::size_t c = 0; c < rule.channels.size(); ++c)
+            if (rule.channels[c].source == sample.sample.source && rule.channels[c].parameter == sample.sample.parameter_id) { matched = c; break; }
+        if (matched == rule.channels.size()) continue;
+        if (!sample.usable()) { state.history[matched].clear(); continue; }
+        auto& history = state.history[matched];
+        history.push_back(sample);
+        if (history.size() > 2) history.pop_front();
+        std::vector<double> values(rule.channels.size(), 0.0);
+        std::vector<const AlignedSample*> used(rule.channels.size(), nullptr);
+        bool complete = true;
+        for (std::size_t c = 0; c < rule.channels.size() && complete; ++c) {
+            const auto& channel = state.history[c];
+            if (channel.empty()) { complete = false; break; }
+            const auto& newest = channel.back();
+            if (newest.time_group != sample.time_group || !newest.usable() || !newest.time_ns ||
+                *newest.time_ns > *reference || *reference - *newest.time_ns > rule.window_ns) { complete = false; break; }
+            const auto value = numeric(newest.sample.value);
+            if (!value) { complete = false; break; }
+            values[c] = *value;
+            used[c] = &newest;
+        }
+        if (!complete) continue;
+        const auto fused = fuseValues(rule.method, values);
+        if (!fused) continue;
+        double minimum = values.front(), maximum = values.front();
+        for (const auto value : values) { minimum = std::min(minimum, value); maximum = std::max(maximum, value); }
+        CorrelationResult result;
+        result.rule = rule.id;
+        result.outcome = maximum - minimum <= rule.tolerance ? "fused" : "fused_divergence";
+        result.time_group = sample.time_group;
+        result.time_ns = *reference;
+        result.metric = *fused;
+        for (const auto* entry : used) result.evidence.push_back(evidence(*entry));
+        emit(std::move(result));
     }
 }
 void ProcessingService::expire(const std::string& group, std::uint64_t time, bool inclusive) {

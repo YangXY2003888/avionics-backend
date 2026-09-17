@@ -40,6 +40,17 @@ struct ReorderDefinition {
     std::string group;
     std::uint64_t window_ns{};
 };
+enum class FusionMethod { Mean, Median, Vote };
+struct FusionChannel {
+    std::string source, parameter;
+};
+struct FusionDefinition {
+    std::string id;
+    std::vector<FusionChannel> channels;
+    FusionMethod method{FusionMethod::Mean};
+    double tolerance{};
+    std::uint64_t window_ns{};
+};
 struct DeduplicationDefinition {
     std::string id, source, parameter;
     std::uint64_t window_ns{};
@@ -52,6 +63,7 @@ struct BackendConfiguration {
     std::vector<ResponseDefinition> responses;
     std::vector<ReorderDefinition> reorder;
     std::vector<DeduplicationDefinition> dedup;
+    std::vector<FusionDefinition> fusion;
     static BackendConfiguration load(const std::filesystem::path&);
 };
 class DictionaryDecoder final : public IParameterDecoder {

@@ -1,5 +1,6 @@
 #include "core/processing.hpp"
 #include "core/demo_fixture.hpp"
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -242,6 +243,66 @@ void testReorderAndDedup() {
         check(!sink->samples[1].usable() && !sink->samples[1].quality.empty(), "out-of-order flag missing");
     }
 }
+BackendConfiguration fusionConfig(FusionMethod method, double tolerance) {
+    BackendConfiguration cfg; cfg.version = "fusion-test";
+    for (const char* source : {"a", "b", "c"}) {
+        ClockDefinition clock; clock.source = source; clock.domain = 1; clock.group = "host";
+        cfg.clocks.push_back(std::move(clock));
+    }
+    FusionDefinition rule; rule.id = "fusion"; rule.method = method; rule.tolerance = tolerance;
+    rule.window_ns = 20000000; rule.channels = {{"a", "value"}, {"b", "value"}, {"c", "value"}};
+    cfg.fusion.push_back(std::move(rule));
+    return cfg;
+}
+void testFusion() {
+    {
+        auto cfg = fusionConfig(FusionMethod::Mean, 0.5);
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(cfg, sink);
+        service.consume(namedSample("a", "value", 0, 10, 0));
+        service.consume(namedSample("b", "value", 0, 10.2, 0));
+        service.consume(namedSample("c", "value", 0, 9.9, 0));
+        service.finish();
+        check(service.stats().results == 1 && count(service, "fused") == 1, "mean fusion must emit one fused result");
+        check(std::abs(*sink->results[0].metric - 10.033333333333333) < 1e-9, "mean fusion value incorrect");
+    }
+    {
+        auto cfg = fusionConfig(FusionMethod::Median, 10);
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(cfg, sink);
+        service.consume(namedSample("a", "value", 0, 1, 0));
+        service.consume(namedSample("b", "value", 0, 5, 0));
+        service.consume(namedSample("c", "value", 0, 9, 0));
+        service.finish();
+        check(count(service, "fused") == 1 && *sink->results[0].metric == 5, "median fusion value incorrect");
+    }
+    {
+        auto cfg = fusionConfig(FusionMethod::Vote, 2);
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(cfg, sink);
+        service.consume(namedSample("a", "value", 0, 2, 0));
+        service.consume(namedSample("b", "value", 0, 2.4, 0));
+        service.consume(namedSample("c", "value", 0, 3, 0));
+        service.finish();
+        check(count(service, "fused") == 1 && *sink->results[0].metric == 2, "vote fusion value incorrect");
+    }
+    {
+        auto cfg = fusionConfig(FusionMethod::Vote, 0.5);
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(cfg, sink);
+        service.consume(namedSample("a", "value", 0, 1, 0));
+        service.consume(namedSample("b", "value", 0, 2, 0));
+        service.consume(namedSample("c", "value", 0, 3, 0));
+        service.finish();
+        check(service.stats().results == 0, "a vote tie must not fabricate a fused value");
+    }
+    {
+        auto cfg = fusionConfig(FusionMethod::Mean, 0.5);
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(cfg, sink);
+        service.consume(namedSample("a", "value", 0, 10, 0));
+        service.consume(namedSample("b", "value", 0, 11, 0));
+        service.consume(namedSample("c", "value", 0, 12, 0));
+        service.finish();
+        check(count(service, "fused_divergence") == 1 && count(service, "fused") == 0, "divergent sources must be flagged");
+        check(sink->results[0].evidence.size() == 3, "fusion must keep every channel as evidence");
+    }
+}
 }
 int main(int argc, char** argv) {
     try {
@@ -253,6 +314,7 @@ int main(int argc, char** argv) {
         testTime(config); testResponses(config); std::cout << "PASS clock mappings, sequence/time quality, response boundaries, restart, stale data, EOF and uncertainty\n";
         testConsistencyAndFixture(config, output); std::cout << "PASS consistency, unit/group boundaries, known 12ms fixture and JSONL output\n";
         testReorderAndDedup(); std::cout << "PASS reorder buffer and redundancy deduplication\n";
+        testFusion(); std::cout << "PASS multi-source fusion (mean/median/vote) and divergence\n";
         std::cout << "ALL PROCESSING TESTS PASSED\nartifacts=" << output.string() << '\n'; return 0;
     } catch (const std::exception& e) { std::cerr << "PROCESSING TEST FAILURE: " << e.what() << '\n'; return 1; }
 }
