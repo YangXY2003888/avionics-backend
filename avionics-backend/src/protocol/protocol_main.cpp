@@ -87,6 +87,40 @@ std::vector<std::uint8_t> encodeFramed(const std::vector<std::uint8_t>& data) {
     return out;
 }
 
+std::uint16_t crc15Can(const std::uint8_t* data, std::size_t size) {
+    std::uint16_t crc = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+        for (int bit = 7; bit >= 0; --bit) {
+            const int current = (data[i] >> bit) & 1, top = (crc >> 14) & 1;
+            crc = static_cast<std::uint16_t>((crc << 1) & 0x7FFF);
+            if (top ^ current) crc ^= 0x4599;
+        }
+    }
+    return crc;
+}
+
+std::uint32_t encodeMilWord(std::uint8_t sync3, std::uint16_t info) {
+    std::uint32_t word = (std::uint32_t(sync3 & 0x7u) << 17) | (std::uint32_t(info) << 1);
+    if (std::popcount(word) % 2 == 0) word |= 1u;
+    return word;
+}
+
+void appendMilWord(std::vector<std::uint8_t>& payload, std::uint32_t word) {
+    for (int i = 0; i < 4; ++i) payload.push_back(static_cast<std::uint8_t>((word >> (8 * i)) & 0xff));
+}
+
+std::vector<std::uint8_t> encodeCan(std::uint32_t id, bool extended, const std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t> out;
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>((id >> (8 * i)) & 0xff));
+    out.push_back(static_cast<std::uint8_t>(extended ? 1 : 0));
+    out.push_back(static_cast<std::uint8_t>(data.size()));
+    out.insert(out.end(), data.begin(), data.end());
+    const auto crc = crc15Can(out.data(), out.size());
+    out.push_back(static_cast<std::uint8_t>(crc & 0xff));
+    out.push_back(static_cast<std::uint8_t>((crc >> 8) & 0xff));
+    return out;
+}
+
 RawFrame makeFrame(const std::string& source, std::uint32_t channel, std::vector<std::uint8_t> payload,
     std::uint64_t sequence, std::uint64_t generation = 1) {
     RawFrame frame;
@@ -108,10 +142,21 @@ void printRoute(const ProtocolRouteResult& result) {
 void runDemo() {
     ProtocolRouter router(std::make_shared<BuiltinProtocolFactory>());
     router.setLimits(ProtocolRoutingLimits{64, 4, 65536, 16});
+    router.setInputDescriptor({"word-src", 0, ""}, ProtocolInputDescriptor{std::nullopt, false, representation_captured_words});
+    router.setInputDescriptor({"mil-src", 0, ""}, ProtocolInputDescriptor{std::nullopt, false, representation_captured_mil_words});
+    router.setInputDescriptor({"frame-src", 0, ""}, ProtocolInputDescriptor{std::nullopt, false, representation_wire_bytes});
+    router.setInputDescriptor({"can-src", 0, ""}, ProtocolInputDescriptor{std::nullopt, false, representation_wire_bytes});
 
     std::vector<std::uint8_t> words;
     for (int i = 0; i < 4; ++i) appendWord(words, encodeWordBigEndian(static_cast<std::uint8_t>(0x10 + i), 100u + i));
     printRoute(router.route(makeFrame("word-src", 0, words, 0)));
+
+    std::vector<std::uint8_t> mil;
+    appendMilWord(mil, encodeMilWord(0b100, static_cast<std::uint16_t>((5u << 11) | (1u << 10) | (2u << 5) | 4u)));
+    for (int i = 0; i < 3; ++i) appendMilWord(mil, encodeMilWord(0b001, static_cast<std::uint16_t>(0x1000 + i)));
+    printRoute(router.route(makeFrame("mil-src", 0, mil, 0)));
+
+    printRoute(router.route(makeFrame("can-src", 0, encodeCan(0x123u, false, {0x11, 0x22, 0x33, 0x44}), 0)));
     printRoute(router.route(makeFrame("frame-src", 0, encodeFramed({0x11, 0x22, 0x33}), 0)));
     for (std::uint64_t i = 0; i < 4; ++i) printRoute(router.route(makeFrame("noisy-src", 0, {0x01, 0x02, 0x03}, i)));
 }
