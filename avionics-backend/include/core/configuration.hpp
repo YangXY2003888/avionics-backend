@@ -1,6 +1,7 @@
 #pragma once
 #include "core/frame_pipeline.hpp"
 #include <optional>
+#include <utility>
 
 namespace avionics {
 enum class FieldType { Signed, Unsigned, Float64, Boolean, Enumeration };
@@ -13,6 +14,9 @@ struct FieldDefinition {
     std::optional<std::uint32_t> valid_bit;
     std::map<std::int64_t, std::string> enum_values;
     std::uint64_t max_age_ns{}, sequence_step{};
+    // When set, the parameter is decoded from a captured CAN frame's data bytes.
+    std::optional<std::uint32_t> can_id;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> can_match;
 };
 struct ClockDefinition {
     std::string source, group;

@@ -23,6 +23,7 @@
 - 双参数一致性比较与指令上升沿—响应上升沿的延迟分析；区分超时、观测缺口、时序不确定、取消和未完成。
 - 有界重排缓冲按映射时间排序后再做质量检查，修正同一时基组内的到达乱序；冗余去重按来源/参数和时间窗抑制重复样本并保留记录。
 - 多源统计融合：把 2~16 路来源按时间窗口对齐后合并为一个值，支持 `mean`/`median`/`vote`；各源分歧超过容差时给出 `fused_divergence`，并保留全部证据。
+- 字典参数可按 CAN 标识符（和匹配字节）从抓包 CAN 帧的数据字节解码，用于真实 CAN 日志；示例 `config/obd-can.ini` 用公开的 OBD-II 标准编码。
 - 参数和分析事件输出 JSONL，保留原始报文编号及配置副本。在线配置模式和离线分析使用同一处理对象。
 - 五种内置协议的探测、解析与工厂：ARINC 429 字、MIL-STD-1553B 字、CAN 2.0 帧、抓包 CAN（无线上 CRC，贴近真实总线日志）和 CRC-16 分帧字节流。
 - 运行时路由器：默认按内容自动识别，支持按来源/通道手动指定和可信来源提示，遵守观察预算和候选上限，按来源、通道、代次和回放原来源隔离；坏帧不切换协议。
@@ -111,6 +112,27 @@ window_ms=20
 ```
 
 各来源通道必须互不相同且能被字典匹配；方法为 `mean`（平均）、`median`（中位数）或 `vote`（与容差无关的多数表决，取值按四舍五入后投票，票数持平不产生结果）。全部分歧在容差内输出 `fused`（metric 为融合值），否则输出 `fused_divergence`。
+
+抓包 CAN 帧可按标识符（和某个匹配字节）解码数据：
+
+```ini
+[parameter vehicle_speed]
+source=vw
+protocol=65541       # 抓包 CAN(canlog)
+channel=1
+can_id=7E8           # 十六进制标识符
+match_offset=2       # 可选：数据字节索引
+match_value=13       # 可选：该字节必须等于的值（OBD-II PID 0x0D）
+bit_offset=24        # 相对 CAN 数据字节，不是整条帧
+bit_width=8
+byte_order=big
+type=unsigned
+unit=km/h
+max_age_ms=500
+sequence_step=0
+```
+
+`can_id` 与可选的 `match_offset`/`match_value` 把同一来源/通道下不同 CAN ID（和 PID）区分开；位偏移相对数据字节。`config/obd-can.ini` 是真实车辆 OBD-II 日志的完整示例（公开标准编码，非厂家 ICD）。
 
 详细字段定义和结果语义见 [v0.2 参数与关联设计](docs/processing-v0.2.md)。这个文件是我们自己的字典格式，需要将设备 ICD 转录并核对后使用，不是直接导入任意厂家 ICD 的通用解释器。
 

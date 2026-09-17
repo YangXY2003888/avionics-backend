@@ -30,6 +30,14 @@ template<class T> T number(const std::string& text) {
     if constexpr (std::is_floating_point_v<T>) if (!std::isfinite(value)) throw std::invalid_argument("nonfinite config value");
     return value;
 }
+std::uint32_t hexadecimal(std::string text) {
+    if (text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) text.erase(0, 2);
+    std::uint32_t value{};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value, 16);
+    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+        throw std::invalid_argument("invalid hexadecimal value: " + text);
+    return value;
+}
 std::uint64_t milliseconds(const std::string& text) {
     const auto value = number<std::uint64_t>(text);
     if (value > 86400000) throw std::invalid_argument("duration exceeds 24 hours");
@@ -99,6 +107,13 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
             field.max_age_ns = milliseconds(take(values, "max_age_ms"));
             field.sequence_step = number<std::uint64_t>(take(values, "sequence_step", "0"));
             if (values.contains("valid_bit")) field.valid_bit = number<std::uint32_t>(take(values, "valid_bit"));
+            if (values.contains("can_id")) field.can_id = hexadecimal(take(values, "can_id"));
+            if (values.contains("match_offset") || values.contains("match_value")) {
+                if (!values.contains("match_offset") || !values.contains("match_value"))
+                    throw std::invalid_argument("CAN match requires both match_offset and match_value");
+                field.can_match = {number<std::uint32_t>(take(values, "match_offset")),
+                    number<std::uint32_t>(take(values, "match_value"))};
+            }
             if (field.type == FieldType::Enumeration) {
                 std::istringstream items(take(values, "enum_values")); std::string item;
                 while (std::getline(items, item, ',')) {
@@ -124,6 +139,12 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
                     (void)label;
                     if (static_cast<std::uint64_t>(code) >= (1ull << field.bit_width)) throw std::invalid_argument("enum code exceeds width");
                 }
+            }
+            if (field.can_id) {
+                if (std::uint64_t(field.bit_offset) + field.bit_width > 64ull)
+                    throw std::invalid_argument("CAN signal exceeds the 8-byte data field");
+                if (field.can_match && (field.can_match->first >= 8 || field.can_match->second > 255))
+                    throw std::invalid_argument("CAN match offset/value out of range");
             }
             field_ids.insert(id); config.fields.push_back(std::move(field));
         } else if (type == "clock") {

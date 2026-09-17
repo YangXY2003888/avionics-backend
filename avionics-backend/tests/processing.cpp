@@ -243,6 +243,21 @@ void testReorderAndDedup() {
         check(!sink->samples[1].usable() && !sink->samples[1].quality.empty(), "out-of-order flag missing");
     }
 }
+void testCanDictionary() {
+    BackendConfiguration cfg; cfg.version = "can-dict";
+    FieldDefinition field; field.id = "speed"; field.source = "vw"; field.protocol = 65541; field.channel = 1;
+    field.unit = "km/h"; field.can_id = 0x7E8u; field.can_match = {2u, 0x0Du};
+    field.bit_offset = 24; field.bit_width = 8; field.big_endian = true;
+    field.type = FieldType::Unsigned; field.max_age_ns = 1000000;
+    cfg.fields = {field};
+    RawFrame frame; frame.source = "vw"; frame.protocol = 65541; frame.channel = 1; frame.generation = 1;
+    frame.record_index = 1;
+    frame.payload = {0xE8, 0x07, 0x00, 0x00, 0x00, 0x08, 0x03, 0x41, 0x0D, 0x64, 0x00, 0x00, 0x00, 0x00};
+    const auto decoded = DictionaryDecoder(cfg).decode(frame);
+    check(decoded.size() == 1 && std::get<std::uint64_t>(decoded[0].value) == 0x64, "CAN identifier/PID decode failed");
+    frame.payload[8] = 0x0C;
+    check(DictionaryDecoder(cfg).decode(frame).empty(), "CAN PID match was not enforced");
+}
 BackendConfiguration fusionConfig(FusionMethod method, double tolerance) {
     BackendConfiguration cfg; cfg.version = "fusion-test";
     for (const char* source : {"a", "b", "c"}) {
@@ -310,7 +325,7 @@ int main(int argc, char** argv) {
         const auto output = std::filesystem::path(argv[2]) / std::to_string(monotonicNowNs());
         std::filesystem::create_directories(output);
         const auto config = BackendConfiguration::load(argv[1]);
-        testConfiguration(argv[1], output); testDictionary(); std::cout << "PASS strict dictionary, bit fields, types, precision and invalid data\n";
+        testConfiguration(argv[1], output); testDictionary(); testCanDictionary(); std::cout << "PASS strict dictionary, bit fields, types, precision and invalid data\n";
         testTime(config); testResponses(config); std::cout << "PASS clock mappings, sequence/time quality, response boundaries, restart, stale data, EOF and uncertainty\n";
         testConsistencyAndFixture(config, output); std::cout << "PASS consistency, unit/group boundaries, known 12ms fixture and JSONL output\n";
         testReorderAndDedup(); std::cout << "PASS reorder buffer and redundancy deduplication\n";
