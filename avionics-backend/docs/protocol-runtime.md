@@ -12,6 +12,7 @@
 | `0x00010002`（65538） | `framed-crc16` | `wire_bytes` | 同步字加长度与 CRC 的通用分帧字节流 |
 | `0x00010003`（65539） | `mil1553b` | `captured_mil_words` | MIL-STD-1553B 20 位字：同步/信息/奇校验 |
 | `0x00010004`（65540） | `can20` | `wire_bytes` | CAN 2.0 帧容器：标识符/标志/DLC/数据/CRC-15 |
+| `0x00010005`（65541） | `canlog` | `captured_can_frames` | 抓包 CAN 帧：标识符/标志/DLC/数据，不含线上 CRC |
 
 ### ARINC 429 字格式
 
@@ -20,6 +21,10 @@
 ### MIL-STD-1553B 字格式
 
 每个字以 4 字节小端容器保存一个 20 位字：同步 `sync[19:17]`（指令/状态字为 `100`，数据字为 `001`）、信息 `information[16:1]`、`parity[0]`。整字置位数必须为奇数，高 12 位必须为零。指令/状态字的信息位解析为 RT 地址、T/R、子地址和字计数；数据字解析为 16 位数据。
+
+### 抓包 CAN 帧（canlog）
+
+真实总线分析工具记录的 CAN 帧通常只含标识符、DLC 和数据字节，线上 CRC 由控制器校验后不落盘。该格式每帧为：4 字节小端标识符、1 字节标志（bit0 扩展帧、bit1 远程帧）、1 字节 DLC、DLC 个数据字节，**不含 CRC**。识别依据是连续的合法帧结构（DLC ≤ 8、标识符范围、长度自洽）和帧序，不使用校验和，因此自动模式无输入表示时可能与其他字节流混淆；建议配置 `capture_representation=captured_can_frames` 明确来源。
 
 ### CAN 2.0 帧容器
 
@@ -43,6 +48,7 @@
 - arinc429：窗口内存在完整的 32 位字、所有字通过奇校验、标签非零，且累计不少于 4 个字时给出 `Strong` 候选并 `Identified`；字不足 4 个时为 `NeedMoreData`；出现结构不合法（长度非 4 的倍数、校验或标签失败）即不属于该协议，不产生候选。
 - mil1553b：每个 20 位字的同步位合法（`100` 或 `001`）、奇校验通过、高位为零，且累计不少于 4 个字时 `Identified`；否则 `NeedMoreData` 或不产生候选。
 - can20：从头解析帧容器并校验 CRC-15。至少 1 条完整且 CRC 正确的帧即可 `Identified`；数据不足为 `NeedMoreData`；长度、标识符、DLC 或 CRC 不符即不产生候选。
+- canlog：连续解析抓包 CAN 帧，长度自洽且标识符/DLC 合法，累计不少于 4 帧时 `Identified`；数据不足为 `NeedMoreData`。由于没有线上 CRC，证据只有结构和帧序。
 - framed-crc16：从头解析同步字、长度和 CRC。至少 1 条完整且 CRC 正确的记录即可 `Identified`；同步字匹配但数据不足为 `NeedMoreData`；同步字或 CRC 不符即不产生候选。
 
 `ProtocolRouter::probeStream()` 汇总候选并判断冲突，规则与抽象接口契约一致：

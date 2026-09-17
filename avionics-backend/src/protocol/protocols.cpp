@@ -106,6 +106,62 @@ bool parseCanFrame(std::span<const std::uint8_t> bytes, std::size_t offset, CanF
     return true;
 }
 
+bool parseCanLogFrame(std::span<const std::uint8_t> bytes, std::size_t offset, CanFrame& out) {
+    if (bytes.size() - offset < can_header_bytes) return false;
+    const auto id = readLittle32(bytes.data() + offset);
+    const auto flags = bytes[offset + 4];
+    const auto dlc = bytes[offset + 5];
+    if (dlc > 8) return false;
+    const auto total = can_header_bytes + dlc;
+    if (bytes.size() - offset < total) return false;
+    const bool extended = (flags & 0x1u) != 0;
+    if (flags > 0x3u) return false;
+    if (extended ? id > 0x1FFFFFFFu : id > 0x7FFu) return false;
+    out.id = id; out.extended = extended; out.remote = (flags & 0x2u) != 0;
+    out.dlc = dlc; out.total = total;
+    return true;
+}
+
+class CanLogDetector final : public IProtocolDetector {
+public:
+    ProtocolId protocolId() const noexcept override { return protocol_can_log_stream; }
+    ProtocolDetectionReport probe(const ProtocolDetectionContext&, std::span<const RawFrame> observations) const override {
+        ProtocolDetectionReport report;
+        std::vector<std::uint8_t> buffer;
+        for (const auto& frame : observations) buffer.insert(buffer.end(), frame.payload.begin(), frame.payload.end());
+        if (buffer.empty()) return report;
+        std::size_t offset = 0;
+        std::uint64_t frames = 0;
+        bool incomplete = false;
+        while (offset < buffer.size()) {
+            if (buffer.size() - offset < can_header_bytes) { incomplete = true; break; }
+            const auto dlc = buffer[offset + 5];
+            if (dlc <= 8 && buffer.size() - offset < can_header_bytes + dlc) { incomplete = true; break; }
+            CanFrame parsed;
+            if (!parseCanLogFrame(buffer, offset, parsed)) break;
+            ++frames;
+            offset += parsed.total;
+        }
+        if (frames < 4) {
+            if (incomplete && frames == 0) { report.status = ProtocolDetectionStatus::NeedMoreData; report.reason = "could not parse a CAN capture frame yet"; }
+            else if (incomplete) { report.status = ProtocolDetectionStatus::NeedMoreData; report.reason = "waiting for more CAN capture frames"; }
+            return report;
+        }
+        ProtocolCandidate candidate;
+        candidate.protocol = protocol_can_log_stream;
+        candidate.strength = CandidateStrength::Strong;
+        candidate.evidence = {
+            {ProtocolEvidenceKind::Structure, "captured CAN identifier, flags and DLC (no wire CRC)"},
+            {ProtocolEvidenceKind::Sequence, "length-delimited captured frame order"}};
+        report.candidates.push_back(std::move(candidate));
+        report.status = ProtocolDetectionStatus::Identified;
+        report.basis = ProtocolSelectionBasis::ContentEvidence;
+        report.selected = protocol_can_log_stream;
+        report.reason = "validated " + std::to_string(frames) + " captured CAN frame(s)";
+        return report;
+    }
+};
+
 class Arinc429Detector final : public IProtocolDetector {
 public:
     ProtocolId protocolId() const noexcept override { return protocol_word_stream; }
@@ -395,6 +451,44 @@ private:
     ProtocolStreamKey key_;
 };
 
+class CanLogHandler final : public IProtocolHandler {
+public:
+    explicit CanLogHandler(ProtocolStreamKey key) : key_(std::move(key)) {}
+    ProtocolId protocolId() const noexcept override { return protocol_can_log_stream; }
+    const ProtocolStreamKey& stream() const noexcept override { return key_; }
+    ProtocolParseResult parse(const RawFrame& frame) override {
+        ProtocolParseResult result;
+        std::size_t offset = 0;
+        while (offset < frame.payload.size()) {
+            CanFrame parsed;
+            if (!parseCanLogFrame(frame.payload, offset, parsed)) {
+                result.status = ProtocolParseStatus::Malformed;
+                result.diagnostics.push_back("CAN capture frame is invalid");
+                return result;
+            }
+            ProtocolMessage message;
+            message.stream = key_;
+            message.protocol = protocol_can_log_stream;
+            message.message_kind = "can_frame";
+            message.payload.assign(frame.payload.begin() + static_cast<std::ptrdiff_t>(offset + can_header_bytes),
+                frame.payload.begin() + static_cast<std::ptrdiff_t>(offset + can_header_bytes + parsed.dlc));
+            message.metadata.push_back({"identifier", std::uint64_t(parsed.id)});
+            message.metadata.push_back({"extended", parsed.extended});
+            message.metadata.push_back({"remote", parsed.remote});
+            message.metadata.push_back({"dlc", std::uint64_t(parsed.dlc)});
+            message.evidence.push_back(referenceOf(key_, frame));
+            message.flags = frame.flags;
+            result.messages.push_back(std::move(message));
+            offset += parsed.total;
+        }
+        result.status = result.messages.empty() ? ProtocolParseStatus::NeedMoreData : ProtocolParseStatus::Complete;
+        return result;
+    }
+    void reset(ProtocolResetReason) noexcept override {}
+private:
+    ProtocolStreamKey key_;
+};
+
 class FramedHandler final : public IProtocolHandler {
 public:
     explicit FramedHandler(ProtocolStreamKey key) : key_(std::move(key)) {}
@@ -461,7 +555,8 @@ private:
 
 bool BuiltinProtocolFactory::supports(ProtocolId protocol) const noexcept {
     return protocol == protocol_word_stream || protocol == protocol_framed_stream ||
-        protocol == protocol_mil1553_stream || protocol == protocol_can_stream;
+        protocol == protocol_mil1553_stream || protocol == protocol_can_stream ||
+        protocol == protocol_can_log_stream;
 }
 
 std::vector<ProtocolDescriptor> BuiltinProtocolFactory::descriptors() const {
@@ -469,7 +564,8 @@ std::vector<ProtocolDescriptor> BuiltinProtocolFactory::descriptors() const {
         {protocol_word_stream, "arinc429", "1", {representation_captured_words}},
         {protocol_framed_stream, "framed-crc16", "1", {representation_wire_bytes}},
         {protocol_mil1553_stream, "mil1553b", "1", {representation_captured_mil_words}},
-        {protocol_can_stream, "can20", "1", {representation_wire_bytes}}};
+        {protocol_can_stream, "can20", "1", {representation_wire_bytes}},
+        {protocol_can_log_stream, "canlog", "1", {representation_captured_can}}};
 }
 
 std::unique_ptr<IProtocolDetector> BuiltinProtocolFactory::createDetector(ProtocolId protocol) const {
@@ -477,6 +573,7 @@ std::unique_ptr<IProtocolDetector> BuiltinProtocolFactory::createDetector(Protoc
     if (protocol == protocol_framed_stream) return std::make_unique<FramedDetector>();
     if (protocol == protocol_mil1553_stream) return std::make_unique<Mil1553Detector>();
     if (protocol == protocol_can_stream) return std::make_unique<CanDetector>();
+    if (protocol == protocol_can_log_stream) return std::make_unique<CanLogDetector>();
     return nullptr;
 }
 
@@ -486,6 +583,7 @@ std::unique_ptr<IProtocolHandler> BuiltinProtocolFactory::createHandler(Protocol
     if (protocol == protocol_framed_stream) return std::make_unique<FramedHandler>(key);
     if (protocol == protocol_mil1553_stream) return std::make_unique<Mil1553Handler>(key);
     if (protocol == protocol_can_stream) return std::make_unique<CanHandler>(key);
+    if (protocol == protocol_can_log_stream) return std::make_unique<CanLogHandler>(key);
     return nullptr;
 }
 }

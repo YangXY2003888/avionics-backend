@@ -116,6 +116,15 @@ std::vector<std::uint8_t> canBytes(std::uint32_t id, bool extended, bool remote,
     return out;
 }
 
+std::vector<std::uint8_t> canLogBytes(std::uint32_t id, bool extended, const std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t> out;
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>((id >> (8 * i)) & 0xff));
+    out.push_back(static_cast<std::uint8_t>(extended ? 1 : 0));
+    out.push_back(static_cast<std::uint8_t>(data.size()));
+    out.insert(out.end(), data.begin(), data.end());
+    return out;
+}
+
 ProtocolRoutingLimits limitsOf(std::size_t streams, std::size_t frames, std::size_t bytes, std::size_t candidates) {
     ProtocolRoutingLimits limits;
     limits.max_streams = streams;
@@ -178,11 +187,12 @@ public:
 void testFactory() {
     const BuiltinProtocolFactory factory;
     const auto descriptors = factory.descriptors();
-    check(descriptors.size() == 4, "factory must describe four built-in protocols");
+    check(descriptors.size() == 5, "factory must describe five built-in protocols");
     check(descriptors[0].id != descriptors[1].id && descriptors[2].id != descriptors[3].id, "protocol descriptors must be unique");
-    check(!descriptors[0].name.empty() && !descriptors[3].name.empty(), "descriptors need names");
+    check(!descriptors[0].name.empty() && !descriptors[4].name.empty(), "descriptors need names");
     check(factory.supports(protocol_word_stream) && factory.supports(protocol_framed_stream), "built-in protocols must be supported");
     check(factory.supports(protocol_mil1553_stream) && factory.supports(protocol_can_stream), "bus protocols must be supported");
+    check(factory.supports(protocol_can_log_stream), "captured CAN log protocol must be supported");
     check(!factory.supports(unknown_protocol), "unknown protocol must not be supported");
     check(factory.createDetector(unknown_protocol) == nullptr, "unknown detector must be null");
     const ProtocolStreamKey key{{"src", 0, ""}, 1, 0};
@@ -277,6 +287,24 @@ void testCanDetection() {
     check(routed.parsing.messages.size() == 1 && routed.parsing.messages[0].payload == data, "CAN payload must round-trip");
     check(routed.parsing.messages[0].message_kind == "can_frame", "CAN message kind expected");
     std::cout << "PASS CAN 2.0 detection and parsing\n";
+}
+
+void testCanLogDetection() {
+    ProtocolRouter router(std::make_shared<BuiltinProtocolFactory>());
+    const StreamAddress address{"canlog-src", 0, ""};
+    router.setInputDescriptor(address, ProtocolInputDescriptor{std::nullopt, false, representation_captured_can});
+    std::vector<std::uint8_t> bytes;
+    for (int i = 0; i < 5; ++i) {
+        const auto frame = canLogBytes(0x7E8u, false, {0x03, 0x41, 0x04, static_cast<std::uint8_t>(i), 0, 0, 0, 0});
+        bytes.insert(bytes.end(), frame.begin(), frame.end());
+    }
+    const auto routed = router.route(bytesFrame("canlog-src", 0, bytes));
+    check(routed.detection.selected == protocol_can_log_stream, "captured CAN log must identify");
+    check(routed.parsing.status == ProtocolParseStatus::Complete, "captured CAN log must parse");
+    check(routed.parsing.messages.size() == 5, "every captured CAN frame must produce a message");
+    check(routed.parsing.messages[0].message_kind == "can_frame" && routed.parsing.messages[0].payload.size() == 8,
+        "captured CAN payload must round-trip");
+    std::cout << "PASS captured CAN log detection and parsing\n";
 }
 
 void testIsolation() {
@@ -419,6 +447,7 @@ int main() {
         testFramedDetection();
         testMil1553Detection();
         testCanDetection();
+        testCanLogDetection();
         testIsolation();
         testBadFrameNoSwitch();
         testAmbiguityAndLimits();
