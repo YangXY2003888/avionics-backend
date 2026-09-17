@@ -148,6 +148,18 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
             rule.max_delay_ns = milliseconds(take(values, "max_delay_ms"));
             if (!rule.max_delay_ns) throw std::invalid_argument("response window must be positive");
             config.responses.push_back(std::move(rule));
+        } else if (type == "reorder") {
+            ReorderDefinition definition; definition.group = id;
+            definition.window_ns = milliseconds(take(values, "window_ms"));
+            if (!definition.window_ns) throw std::invalid_argument("reorder window must be positive");
+            config.reorder.push_back(std::move(definition));
+        } else if (type == "dedup") {
+            DeduplicationDefinition definition; definition.id = id;
+            definition.source = take(values, "source");
+            definition.parameter = take(values, "parameter");
+            definition.window_ns = milliseconds(take(values, "window_ms"));
+            if (!definition.window_ns) throw std::invalid_argument("dedup window must be positive");
+            config.dedup.push_back(std::move(definition));
         } else throw std::invalid_argument("unknown section type: " + type);
         empty(values);
     }
@@ -162,6 +174,12 @@ BackendConfiguration BackendConfiguration::load(const std::filesystem::path& pat
     };
     for (const auto& rule : config.consistency) { validate_selector(rule.left); validate_selector(rule.right); distinct(rule.left, rule.right); }
     for (const auto& rule : config.responses) { validate_selector(rule.command); validate_selector(rule.response); distinct(rule.command, rule.response); }
+    for (const auto& definition : config.reorder) {
+        bool known = false;
+        for (const auto& clock : config.clocks) if (clock.group == definition.group) { known = true; break; }
+        if (!known) throw std::invalid_argument("reorder refers to unknown clock group: " + definition.group);
+    }
+    for (const auto& definition : config.dedup) validate_selector(Selector{definition.source, definition.parameter});
     return config;
 }
 }

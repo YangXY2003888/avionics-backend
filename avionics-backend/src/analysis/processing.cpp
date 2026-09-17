@@ -43,7 +43,7 @@ CorrelationResult event(const std::string& id, const std::string& outcome, const
     return result;
 }
 }
-AlignedSample TimeQualityProcessor::process(const ParameterSample& sample) {
+AlignedSample TimeQualityProcessor::align(const ParameterSample& sample) const {
     AlignedSample out; out.sample = sample;
     if (!sample.valid) out.quality.push_back("invalid_payload");
     const ClockDefinition* clock = nullptr;
@@ -59,8 +59,12 @@ AlignedSample TimeQualityProcessor::process(const ParameterSample& sample) {
         if (sample.capture_time_ns < offset) { out.quality.push_back("time_underflow"); return out; }
         out.time_ns = sample.capture_time_ns - offset;
     }
+    return out;
+}
+AlignedSample TimeQualityProcessor::process(const ParameterSample& sample) {
+    auto out = align(sample);
     // An invalid payload must not poison the ordering baseline with an arbitrary timestamp.
-    if (!sample.valid) return out;
+    if (!out.time_ns || !sample.valid) return out;
     const auto key = std::make_pair(sample.source, sample.parameter_id);
     auto found = previous_.find(key);
     if (found != previous_.end() && found->second.sample.generation == sample.generation &&
@@ -78,8 +82,10 @@ AlignedSample TimeQualityProcessor::process(const ParameterSample& sample) {
 }
 ProcessingService::ProcessingService(BackendConfiguration config, std::shared_ptr<IAnalysisSink> sink)
     : config_(std::move(config)), quality_(config_.clocks), sink_(std::move(sink)),
-      pairs_(config_.consistency.size()), responses_(config_.responses.size()) {
+      pairs_(config_.consistency.size()), responses_(config_.responses.size()),
+      dedup_last_(config_.dedup.size()) {
     if (!sink_) throw std::invalid_argument("analysis sink is required");
+    for (const auto& definition : config_.reorder) reorder_windows_[definition.group] = definition.window_ns;
 }
 void ProcessingService::emit(CorrelationResult result) {
     sink_->result(result);
@@ -90,7 +96,37 @@ void ProcessingService::emit(CorrelationResult result) {
 void ProcessingService::consume(const ParameterSample& sample) {
     std::lock_guard lock(mutex_);
     if (finished_) throw std::logic_error("analysis is already finished");
-    auto aligned = quality_.process(sample);
+    const auto probe = quality_.align(sample);
+    const auto window_it = probe.time_group.empty() ? reorder_windows_.end() : reorder_windows_.find(probe.time_group);
+    if (probe.time_ns && window_it != reorder_windows_.end() && window_it->second > 0) {
+        const auto group = probe.time_group;
+        const auto time = *probe.time_ns;
+        reorder_buffers_[group].emplace(time, sample);
+        auto& maximum = reorder_max_[group];
+        if (time > maximum) maximum = time;
+        releaseReady(group, false);
+        return;
+    }
+    deliver(quality_.process(sample));
+}
+void ProcessingService::applyDedup(AlignedSample& aligned) {
+    if (config_.dedup.empty() || !aligned.time_ns) return;
+    const auto& sample = aligned.sample;
+    for (std::size_t i = 0; i < config_.dedup.size(); ++i) {
+        const auto& rule = config_.dedup[i];
+        const bool matches = (rule.source == "*" || rule.source == sample.source) &&
+            (rule.parameter == "*" || rule.parameter == sample.parameter_id);
+        if (!matches) continue;
+        auto& last = dedup_last_[i];
+        if (last && *aligned.time_ns >= *last && *aligned.time_ns - *last <= rule.window_ns) {
+            aligned.quality.push_back("duplicate");
+            continue;
+        }
+        last = *aligned.time_ns;
+    }
+}
+void ProcessingService::deliver(AlignedSample aligned) {
+    applyDedup(aligned);
     if (aligned.usable()) {
         auto& watermark = watermarks_[aligned.time_group];
         if (*aligned.time_ns < watermark) aligned.quality.push_back("late_for_group");
@@ -104,6 +140,22 @@ void ProcessingService::consume(const ParameterSample& sample) {
     ++stats_.samples;
     if (aligned.usable()) ++stats_.usable; else ++stats_.rejected;
     processConsistency(aligned); processResponse(aligned);
+}
+void ProcessingService::releaseReady(const std::string& group, bool force) {
+    const auto window_it = reorder_windows_.find(group);
+    const auto buffer_it = reorder_buffers_.find(group);
+    if (window_it == reorder_windows_.end() || buffer_it == reorder_buffers_.end()) return;
+    auto& buffer = buffer_it->second;
+    const auto maximum = reorder_max_[group];
+    const auto window = window_it->second;
+    const auto cutoff = (force || maximum < window) ? std::numeric_limits<std::uint64_t>::max() : maximum - window;
+    while (!buffer.empty()) {
+        auto it = buffer.begin();
+        if (!force && it->first > cutoff) break;
+        const auto raw = it->second;
+        buffer.erase(it);
+        deliver(quality_.process(raw));
+    }
 }
 void ProcessingService::processConsistency(const AlignedSample& sample) {
     for (std::size_t i = 0; i < config_.consistency.size(); ++i) {
@@ -197,11 +249,17 @@ void ProcessingService::advance(const std::string& group, std::uint64_t watermar
     bool known = false;
     for (const auto& clock : config_.clocks) if (clock.group == group) known = true;
     if (!known || watermark < watermarks_[group]) throw std::invalid_argument("unknown group or backward watermark");
+    if (reorder_windows_.count(group)) {
+        auto& maximum = reorder_max_[group];
+        if (watermark > maximum) maximum = watermark;
+        releaseReady(group, false);
+    }
     expire(group, watermark, true); watermarks_[group] = watermark;
 }
 void ProcessingService::finish() {
     std::lock_guard lock(mutex_);
     if (finished_) return;
+    for (const auto& entry : reorder_buffers_) releaseReady(entry.first, true);
     for (std::size_t i = 0; i < responses_.size(); ++i) if (responses_[i].pending) {
         emit(event(config_.responses[i].id, "response_unresolved", *responses_[i].pending)); responses_[i].pending.reset();
     }

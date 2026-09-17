@@ -36,12 +36,22 @@ struct ResponseDefinition {
     double command_threshold{}, response_threshold{};
     std::uint64_t max_delay_ns{};
 };
+struct ReorderDefinition {
+    std::string group;
+    std::uint64_t window_ns{};
+};
+struct DeduplicationDefinition {
+    std::string id, source, parameter;
+    std::uint64_t window_ns{};
+};
 struct BackendConfiguration {
     std::string version;
     std::vector<FieldDefinition> fields;
     std::vector<ClockDefinition> clocks;
     std::vector<ConsistencyDefinition> consistency;
     std::vector<ResponseDefinition> responses;
+    std::vector<ReorderDefinition> reorder;
+    std::vector<DeduplicationDefinition> dedup;
     static BackendConfiguration load(const std::filesystem::path&);
 };
 class DictionaryDecoder final : public IParameterDecoder {

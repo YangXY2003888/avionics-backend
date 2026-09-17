@@ -191,6 +191,57 @@ void testConsistencyAndFixture(const BackendConfiguration& cfg, const std::files
     typed.quality = {"invalid_payload"}; json_sink->sample(typed); json_sink->flush();
     throws([&] { JsonlAnalysisSink same(output / "typed_json"); }, "analysis output should not overwrite existing evidence");
 }
+ParameterSample namedSample(const std::string& source, const std::string& parameter, std::uint64_t ms, double value,
+    std::uint64_t sequence) {
+    ParameterSample result;
+    result.source = source; result.parameter_id = parameter;
+    result.capture_time_ns = 1000000000 + ms * 1000000; result.ingest_time_ns = result.capture_time_ns + 1;
+    result.generation = 1; result.clock_domain = 1; result.sequence = sequence;
+    result.max_age_ns = 100000000; result.valid = true; result.value = value;
+    result.decoder_version = "test-v1"; result.unit = "degC"; result.raw_record_index = sequence + 1;
+    return result;
+}
+void testReorderAndDedup() {
+    BackendConfiguration cfg; cfg.version = "reorder-dedup";
+    ClockDefinition clock; clock.source = "sensor"; clock.domain = 1; clock.group = "host";
+    cfg.clocks.push_back(clock);
+    ReorderDefinition reorder; reorder.group = "host"; reorder.window_ns = 20000000;
+    cfg.reorder.push_back(reorder);
+    DeduplicationDefinition dedup; dedup.id = "temperature"; dedup.source = "sensor";
+    dedup.parameter = "temperature"; dedup.window_ns = 10000000;
+    cfg.dedup.push_back(dedup);
+    {
+        auto reorder_only = cfg; reorder_only.dedup.clear();
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(reorder_only, sink);
+        service.consume(namedSample("sensor", "temperature", 30, 3, 2));
+        service.consume(namedSample("sensor", "temperature", 10, 1, 0));
+        service.consume(namedSample("sensor", "temperature", 20, 2, 1));
+        service.finish();
+        check(service.stats().samples == 3 && service.stats().usable == 3, "reorder lost or rejected samples");
+        check(sink->samples.size() == 3, "reorder did not deliver every sample");
+        for (std::size_t i = 0; i < sink->samples.size(); ++i)
+            check(sink->samples[i].time_ns == std::optional<std::uint64_t>(1000000000ull + (10 + i * 10) * 1000000ull),
+                "reorder did not deliver in time order");
+    }
+    {
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(cfg, sink);
+        service.consume(namedSample("sensor", "temperature", 0, 1, 0));
+        service.consume(namedSample("sensor", "temperature", 5, 1, 1));
+        service.consume(namedSample("sensor", "temperature", 30, 1, 2));
+        service.finish();
+        check(service.stats().usable == 2 && service.stats().rejected == 1, "duplicate was not suppressed");
+        check(sink->samples[1].quality.size() == 1 && sink->samples[1].quality[0] == "duplicate", "duplicate was not flagged");
+    }
+    {
+        auto plain = cfg; plain.reorder.clear();
+        auto sink = std::make_shared<MemorySink>(); ProcessingService service(plain, sink);
+        service.consume(namedSample("sensor", "temperature", 30, 3, 0));
+        service.consume(namedSample("sensor", "temperature", 10, 1, 1));
+        service.finish();
+        check(service.stats().rejected == 1, "without reorder an out-of-order sample must be dropped");
+        check(!sink->samples[1].usable() && !sink->samples[1].quality.empty(), "out-of-order flag missing");
+    }
+}
 }
 int main(int argc, char** argv) {
     try {
@@ -201,6 +252,7 @@ int main(int argc, char** argv) {
         testConfiguration(argv[1], output); testDictionary(); std::cout << "PASS strict dictionary, bit fields, types, precision and invalid data\n";
         testTime(config); testResponses(config); std::cout << "PASS clock mappings, sequence/time quality, response boundaries, restart, stale data, EOF and uncertainty\n";
         testConsistencyAndFixture(config, output); std::cout << "PASS consistency, unit/group boundaries, known 12ms fixture and JSONL output\n";
+        testReorderAndDedup(); std::cout << "PASS reorder buffer and redundancy deduplication\n";
         std::cout << "ALL PROCESSING TESTS PASSED\nartifacts=" << output.string() << '\n'; return 0;
     } catch (const std::exception& e) { std::cerr << "PROCESSING TEST FAILURE: " << e.what() << '\n'; return 1; }
 }
