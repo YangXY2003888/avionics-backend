@@ -8,6 +8,81 @@
 本仓库是 C++20 的机载总线监控后端（源码在 `avionics-backend/`）。当前目标包括：为一个
 Python 研究项目提供**稳定的数据来源**，接口规范见 `avionics-backend/docs/interface-for-analysis.md`。
 
+## 0.1 文件结构（入库）
+
+仓库根 `avionics-backend/`；项目本体在其子目录 `avionics-backend/`（以下相对项目目录）：
+
+```text
+avionics-backend/
+├─ CMakeLists.txt                 构建目标：bus_core、插件、程序、测试
+├─ README.md                      项目说明（构建、运行、配置、接口入口）
+├─ .gitignore                     忽略 build*/、runs/、snapshots/、*.log、本地演示件
+├─ config/                        配置字典与规则（INI）
+│   ├─ correlation-demo.ini       关联分析示例字典
+│   ├─ flat-demo.ini              扁平导出示例（含申报周期 nominal_period_ns）
+│   ├─ obd-can.ini                真实车辆 OBD-II 字典（公开标准编码，非厂家 ICD）
+│   └─ simulated.example.txt      模拟插件配置示例
+├─ docs/                          设计与接口文档
+│   ├─ architecture.md            模块结构与生命周期
+│   ├─ protocol-abstractions.md   协议抽象接口契约
+│   ├─ protocol-runtime.md        协议识别/路由/解析实现
+│   ├─ processing-v0.2.md         参数、时间质量、规则语义
+│   ├─ interface-for-analysis.md  面向分析的数据接口（flat-1，字段/时间/状态）
+│   ├─ plugin-contract.md         插件开发约定
+│   └─ verification*.md|json      验证记录
+├─ examples/
+│   └─ read_flat.py               读取扁平导出（仅标准库）
+├─ include/
+│   ├─ core/                      核心接口与数据类型（见下）
+│   └─ plugin_api/                C 插件 ABI（bus_plugin.h）与插件侧辅助
+├─ plugins/                       采集插件（编译为动态库）
+│   ├─ simulated/                 模拟数据源
+│   ├─ random/                    随机/场景数据源
+│   └─ replay/                    归档回放
+├─ scripts/
+│   ├─ build-mingw.ps1            一键构建 + CTest
+│   └─ verify_live_roundtrip.py   在线/离线一致性验收脚本
+├─ src/
+│   ├─ main.cpp                   bus_backend 入口
+│   ├─ analyze_main.cpp           bus_analyze 入口
+│   ├─ bus/                       实例与生命周期（BusManager）
+│   ├─ plugin/                    插件加载与 C ABI 适配
+│   ├─ platform/                  动态库加载（Windows/POSIX）
+│   ├─ pipeline/                  有界接收队列与处理线程（FramePipeline）
+│   ├─ decoder/                   字典解析、位提取、解码（Dictionary/Simulated）
+│   ├─ analysis/                  时间质量、一致性、响应、重排/去重/融合
+│   ├─ protocol/                  协议识别/路由/解析、消息解码、bus_protocol 入口
+│   ├─ export/                    扁平导出（flat_export）与 bus_export 入口
+│   └─ storage/                   原始归档（AVBUS）与 JSONL 输出
+└─ tests/                         CTest：integration / processing / protocol_* / flat_export
+```
+
+`include/core/` 关键头文件：
+
+| 头文件 | 职责 |
+|---|---|
+| `types.hpp` | `RawFrame`、`ParameterSample`、`ParameterValue` 等基础类型 |
+| `configuration.hpp` | 字典/时钟/规则/重排/去重/融合定义与 `BackendConfiguration::load` |
+| `processing.hpp` | `TimeQualityProcessor`、`ProcessingService`、`IAnalysisSink` |
+| `frame_pipeline.hpp` | `FramePipeline`、`IParameterDecoder`、`IParameterConsumer` |
+| `archive.hpp` | `ArchiveWriter/Reader`（小端、逐记录 CRC32） |
+| `decoder_registry.hpp` | 按协议编号分派解码器 |
+| `protocol_types.hpp` / `protocol_interfaces.hpp` / `protocol_impl.hpp` | 协议类型、抽象接口、内置实现与工厂/路由器声明 |
+| `flat_export.hpp` | 面向分析的扁平导出（`bus_export`） |
+| `bitfield.hpp` / `field_value.hpp` | 位提取与字段值解码（供解码层复用） |
+| `analysis.hpp` / `demo_fixture.hpp` | 示例分析器与确定性样例数据 |
+
+**新增代码放置规则**：
+- 新协议：改 `src/protocol/protocols.cpp` 与 `include/core/protocol_impl.hpp`，加 `tests/protocol_runtime.cpp` 用例。
+- 新分析规则：改 `src/analysis/processing.cpp`、`include/core/configuration.hpp`、`src/decoder/configuration.cpp`，加 `tests/processing.cpp` 用例。
+- 新导出字段/状态：改 `src/export/flat_export.cpp` 与 `docs/interface-for-analysis.md`，加 `tests/flat_export.cpp` 用例；**只增不改**。
+- 新插件：新增 `plugins/<name>/`，在 `CMakeLists.txt` 用 `add_bus_plugin` 注册，并加演示/测试。
+- 新配置键：改 `include/core/configuration.hpp` 与 `src/decoder/configuration.cpp`，严格校验、缺省不猜测。
+- 新命令行程序：新增 `src/<area>/*_main.cpp`，在 `CMakeLists.txt` 注册可执行目标与测试。
+
+**不纳入版本库**：`build-gcc-debug/`、`runs/`、`snapshots/`、`*.log`，以及本地演示件
+`presentation/`、`run-full-demo.bat`（见 `.gitignore`）。
+
 ## 1. 提交规范（强制）
 
 - **每个阶段结束必须提交 git**，不允许把多个阶段的改动堆在一起未提交。
