@@ -13,10 +13,13 @@ namespace avionics {
 // any real bus numbering; the numbering is defined only inside this program.
 inline constexpr ProtocolId protocol_word_stream = 0x00010001u;
 inline constexpr ProtocolId protocol_framed_stream = 0x00010002u;
+inline constexpr ProtocolId protocol_mil1553_stream = 0x00010003u;
+inline constexpr ProtocolId protocol_can_stream = 0x00010004u;
 
 // Represented capture formats. A stream must state one of these explicitly
 // before the router may restrict detection to a matching representation.
 inline constexpr const char* representation_captured_words = "captured_words";
+inline constexpr const char* representation_captured_mil_words = "captured_mil_words";
 inline constexpr const char* representation_wire_bytes = "wire_bytes";
 
 class BuiltinProtocolFactory final : public IProtocolFactory {

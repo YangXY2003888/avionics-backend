@@ -72,6 +72,50 @@ RawFrame bytesFrame(const std::string& source, std::uint32_t channel, const std:
     return frame;
 }
 
+std::uint16_t crc15(const std::uint8_t* data, std::size_t size) {
+    std::uint16_t crc = 0;
+    for (std::size_t i = 0; i < size; ++i) {
+        for (int bit = 7; bit >= 0; --bit) {
+            const int current = (data[i] >> bit) & 1, top = (crc >> 14) & 1;
+            crc = static_cast<std::uint16_t>((crc << 1) & 0x7FFF);
+            if (top ^ current) crc ^= 0x4599;
+        }
+    }
+    return crc;
+}
+
+std::uint32_t makeMilWord(std::uint8_t sync3, std::uint16_t info) {
+    std::uint32_t word = (std::uint32_t(sync3 & 0x7u) << 17) | (std::uint32_t(info) << 1);
+    if (std::popcount(word) % 2 == 0) word |= 1u;
+    return word;
+}
+
+RawFrame milFrame(const std::string& source, std::uint32_t channel, const std::vector<std::uint32_t>& words,
+    std::uint64_t sequence = 0, std::uint64_t generation = 1) {
+    RawFrame frame;
+    frame.source = source; frame.channel = channel; frame.generation = generation; frame.sequence = sequence;
+    frame.record_index = sequence + 1; frame.capture_time_ns = 1000000000 + sequence * 1000000;
+    for (const auto word : words) {
+        frame.payload.push_back(static_cast<std::uint8_t>(word & 0xff));
+        frame.payload.push_back(static_cast<std::uint8_t>((word >> 8) & 0xff));
+        frame.payload.push_back(static_cast<std::uint8_t>((word >> 16) & 0xff));
+        frame.payload.push_back(static_cast<std::uint8_t>((word >> 24) & 0xff));
+    }
+    return frame;
+}
+
+std::vector<std::uint8_t> canBytes(std::uint32_t id, bool extended, bool remote, const std::vector<std::uint8_t>& data) {
+    std::vector<std::uint8_t> out;
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<std::uint8_t>((id >> (8 * i)) & 0xff));
+    out.push_back(static_cast<std::uint8_t>((extended ? 1 : 0) | (remote ? 2 : 0)));
+    out.push_back(static_cast<std::uint8_t>(data.size()));
+    out.insert(out.end(), data.begin(), data.end());
+    const auto crc = crc15(out.data(), out.size());
+    out.push_back(static_cast<std::uint8_t>(crc & 0xff));
+    out.push_back(static_cast<std::uint8_t>((crc >> 8) & 0xff));
+    return out;
+}
+
 ProtocolRoutingLimits limitsOf(std::size_t streams, std::size_t frames, std::size_t bytes, std::size_t candidates) {
     ProtocolRoutingLimits limits;
     limits.max_streams = streams;
@@ -134,10 +178,11 @@ public:
 void testFactory() {
     const BuiltinProtocolFactory factory;
     const auto descriptors = factory.descriptors();
-    check(descriptors.size() == 2, "factory must describe two built-in protocols");
-    check(descriptors[0].id != descriptors[1].id, "protocol descriptors must be unique");
-    check(!descriptors[0].name.empty() && !descriptors[1].name.empty(), "descriptors need names");
+    check(descriptors.size() == 4, "factory must describe four built-in protocols");
+    check(descriptors[0].id != descriptors[1].id && descriptors[2].id != descriptors[3].id, "protocol descriptors must be unique");
+    check(!descriptors[0].name.empty() && !descriptors[3].name.empty(), "descriptors need names");
     check(factory.supports(protocol_word_stream) && factory.supports(protocol_framed_stream), "built-in protocols must be supported");
+    check(factory.supports(protocol_mil1553_stream) && factory.supports(protocol_can_stream), "bus protocols must be supported");
     check(!factory.supports(unknown_protocol), "unknown protocol must not be supported");
     check(factory.createDetector(unknown_protocol) == nullptr, "unknown detector must be null");
     const ProtocolStreamKey key{{"src", 0, ""}, 1, 0};
@@ -168,13 +213,14 @@ void testSelectionPolicy() {
 void testWordDetection() {
     ProtocolRouter router(std::make_shared<BuiltinProtocolFactory>());
     const StreamAddress address{"word-src", 0, ""};
+    router.setInputDescriptor(address, ProtocolInputDescriptor{std::nullopt, false, representation_captured_words});
     const auto words = std::vector<std::uint32_t>{makeWord(0x10, 100), makeWord(0x11, 200), makeWord(0x12, 300), makeWord(0x13, 400)};
     const auto first = router.route(wordFrame("word-src", 0, words));
     check(first.detection.status == ProtocolDetectionStatus::Identified, "valid words must identify");
     check(first.detection.selected == protocol_word_stream, "word protocol must be selected");
     check(first.detection.basis == ProtocolSelectionBasis::ContentEvidence, "content basis expected");
     check(first.parsing.status == ProtocolParseStatus::Complete, "word replay must complete");
-    check(first.parsing.messages.size() == 1 && first.parsing.messages[0].message_kind == "word", "word message expected");
+    check(first.parsing.messages.size() == 1 && first.parsing.messages[0].message_kind == "arinc429", "ARINC 429 message expected");
     const auto second = router.route(wordFrame("word-src", 0, words, 1));
     check(second.detection.selected == protocol_word_stream && second.parsing.status == ProtocolParseStatus::Complete,
         "confirmed stream must reuse the word handler");
@@ -202,6 +248,35 @@ void testFramedDetection() {
     check(finished.parsing.status == ProtocolParseStatus::Complete && finished.parsing.messages[0].payload == data,
         "replayed observation must recover the split frame");
     std::cout << "PASS automatic framed detection across frames\n";
+}
+
+void testMil1553Detection() {
+    ProtocolRouter router(std::make_shared<BuiltinProtocolFactory>());
+    const StreamAddress address{"mil-src", 0, ""};
+    router.setInputDescriptor(address, ProtocolInputDescriptor{std::nullopt, false, representation_captured_mil_words});
+    const std::uint16_t command = static_cast<std::uint16_t>((5u << 11) | (1u << 10) | (2u << 5) | 4u);
+    const auto words = std::vector<std::uint32_t>{makeMilWord(0b100, command), makeMilWord(0b001, 0x1234),
+        makeMilWord(0b001, 0x5678), makeMilWord(0b001, 0x9ABC)};
+    const auto routed = router.route(milFrame("mil-src", 0, words));
+    check(routed.detection.selected == protocol_mil1553_stream, "1553B stream must identify");
+    check(routed.parsing.status == ProtocolParseStatus::Complete, "1553B frame must parse");
+    check(routed.parsing.messages.size() == 1 &&
+        routed.parsing.messages[0].message_kind == "mil1553_command_or_status", "1553B command word expected");
+    std::cout << "PASS MIL-STD-1553B detection and parsing\n";
+}
+
+void testCanDetection() {
+    ProtocolRouter router(std::make_shared<BuiltinProtocolFactory>());
+    const StreamAddress address{"can-src", 0, ""};
+    router.setInputDescriptor(address, ProtocolInputDescriptor{std::nullopt, false, representation_wire_bytes});
+    const std::vector<std::uint8_t> data{0x11, 0x22, 0x33, 0x44};
+    const auto bytes = canBytes(0x123u, false, false, data);
+    const auto routed = router.route(bytesFrame("can-src", 0, bytes));
+    check(routed.detection.selected == protocol_can_stream, "CAN stream must identify");
+    check(routed.parsing.status == ProtocolParseStatus::Complete, "CAN frame must parse");
+    check(routed.parsing.messages.size() == 1 && routed.parsing.messages[0].payload == data, "CAN payload must round-trip");
+    check(routed.parsing.messages[0].message_kind == "can_frame", "CAN message kind expected");
+    std::cout << "PASS CAN 2.0 detection and parsing\n";
 }
 
 void testIsolation() {
@@ -342,6 +417,8 @@ int main() {
         testSelectionPolicy();
         testWordDetection();
         testFramedDetection();
+        testMil1553Detection();
+        testCanDetection();
         testIsolation();
         testBadFrameNoSwitch();
         testAmbiguityAndLimits();
