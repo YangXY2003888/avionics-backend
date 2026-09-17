@@ -2,3 +2,8 @@
 /runs/
 /snapshots/
 *.log
+# Local demo tooling (dashboard/import scripts and the launcher). Kept out of
+# version control: the backend itself must not add visualization, and these
+# reference machine-local toolchain paths.
+/presentation/
+/run-full-demo.bat
